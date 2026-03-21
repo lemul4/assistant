@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from app import config
 from app.audio.recorder import record_audio
 from app.commands.intents import parse_command
+from app.commands.llm_parser import LocalLLMCommandParser
 from app.executor.safe_executor import CommandExecutor
 from app.stt.vosk_recognizer import VoskSpeechRecognizer
 
@@ -27,15 +28,22 @@ class ListenWorker(QObject):
     done = Signal(str, str, str)
     complete = Signal()
 
-    def __init__(self, recognizer: VoskSpeechRecognizer, executor: CommandExecutor) -> None:
+    def __init__(
+        self,
+        recognizer: VoskSpeechRecognizer,
+        executor: CommandExecutor,
+        llm_parser: LocalLLMCommandParser | None = None,
+    ) -> None:
         super().__init__()
         self._recognizer = recognizer
         self._executor = executor
+        self._llm_parser = llm_parser
 
     @Slot()
     def run(self) -> None:
         recognized_text = ""
         result_text = ""
+        llm_raw_response: str | None = None
 
         try:
             self.progress.emit("Записываю аудио...")
@@ -51,12 +59,28 @@ class ListenWorker(QObject):
             if not recognized_text:
                 result_text = "Не удалось распознать команду. Попробуйте еще раз."
             else:
-                parsed = parse_command(recognized_text)
+                parsed = None
+                llm_error = None
+
+                if self._llm_parser is not None:
+                    self.progress.emit("Интерпретирую команду через локальную LLM...")
+                    llm_result = self._llm_parser.parse(recognized_text)
+                    parsed = llm_result.command
+                    llm_error = llm_result.error
+                    llm_raw_response = llm_result.raw_response
+
                 if parsed is None:
-                    result_text = (
+                    parsed = parse_command(recognized_text)
+
+                if parsed is None:
+                    base_message = (
                         "Команда не распознана или не поддерживается в MVP. "
                         "Попробуйте одну из разрешенных команд."
                     )
+                    if llm_error:
+                        result_text = f"{base_message} (LLM: {llm_error})"
+                    else:
+                        result_text = base_message
                 else:
                     result_text = self._executor.execute(parsed)
         except Exception as exc:
@@ -65,15 +89,25 @@ class ListenWorker(QObject):
         timestamp = datetime.now().strftime("%H:%M:%S")
         spoken = recognized_text if recognized_text else "<пусто>"
         log_line = f"[{timestamp}] {spoken} -> {result_text}"
+        if llm_raw_response is not None:
+            compact = " ".join(llm_raw_response.split())
+            compact = compact[:660] + ("..." if len(compact) > 660 else "")
+            log_line = f"{log_line} | LLM: {compact}"
         self.done.emit(recognized_text, result_text, log_line)
         self.complete.emit()
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, recognizer: VoskSpeechRecognizer, executor: CommandExecutor) -> None:
+    def __init__(
+        self,
+        recognizer: VoskSpeechRecognizer,
+        executor: CommandExecutor,
+        llm_parser: LocalLLMCommandParser | None = None,
+    ) -> None:
         super().__init__()
         self._recognizer = recognizer
         self._executor = executor
+        self._llm_parser = llm_parser
         self._thread: QThread | None = None
         self._worker: ListenWorker | None = None
 
@@ -129,7 +163,7 @@ class MainWindow(QMainWindow):
         self._set_status(f"Слушаю ({config.RECORD_SECONDS} сек)...")
 
         self._thread = QThread(self)
-        self._worker = ListenWorker(self._recognizer, self._executor)
+        self._worker = ListenWorker(self._recognizer, self._executor, self._llm_parser)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
