@@ -162,7 +162,7 @@ class LangflowTelemetry:
             with request.urlopen(req, timeout=self._timeout_s) as response:
                 response.read(1)
         except Exception as exc:
-            print(f"[LangflowTelemetry] Failed to send event: {exc}")
+            _ = exc
 
 
 class NoOpTelemetry:

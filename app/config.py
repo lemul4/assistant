@@ -5,7 +5,6 @@ SAMPLE_RATE = 16_000
 CHANNELS = 1
 RECORD_SECONDS = 4
 MODEL_PATH = Path("models/vosk-model-small-ru-0.22")
-MAX_LOG_LINES = 30
 
 # STT (Faster-Whisper)
 FASTER_WHISPER_MODEL = "small"
