@@ -20,7 +20,7 @@ from app.audio.recorder import record_audio
 from app.commands.intents import parse_command
 from app.commands.llm_parser import LocalLLMCommandParser
 from app.executor.safe_executor import CommandExecutor
-from app.stt.vosk_recognizer import VoskSpeechRecognizer
+from app.stt.faster_whisper_recognizer import FasterWhisperSpeechRecognizer
 
 
 class ListenWorker(QObject):
@@ -30,7 +30,7 @@ class ListenWorker(QObject):
 
     def __init__(
         self,
-        recognizer: VoskSpeechRecognizer,
+        recognizer: FasterWhisperSpeechRecognizer,
         executor: CommandExecutor,
         llm_parser: LocalLLMCommandParser | None = None,
     ) -> None:
@@ -59,18 +59,18 @@ class ListenWorker(QObject):
             if not recognized_text:
                 result_text = "Не удалось распознать команду. Попробуйте еще раз."
             else:
-                parsed = None
+                parsed = parse_command(recognized_text)
                 llm_error = None
 
-                if self._llm_parser is not None:
+                if parsed is None and self._llm_parser is not None:
+                    parsed = self._llm_parser.match_desktop_from_transcription(recognized_text)
+
+                if parsed is None and self._llm_parser is not None:
                     self.progress.emit("Интерпретирую команду через локальную LLM...")
                     llm_result = self._llm_parser.parse(recognized_text)
                     parsed = llm_result.command
                     llm_error = llm_result.error
                     llm_raw_response = llm_result.raw_response
-
-                if parsed is None:
-                    parsed = parse_command(recognized_text)
 
                 if parsed is None:
                     base_message = (
@@ -100,7 +100,7 @@ class ListenWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(
         self,
-        recognizer: VoskSpeechRecognizer,
+        recognizer: FasterWhisperSpeechRecognizer,
         executor: CommandExecutor,
         llm_parser: LocalLLMCommandParser | None = None,
     ) -> None:
