@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from app import config
 from app.commands.llm_parser import build_default_llm_parser
 from app.executor.safe_executor import CommandExecutor
+from app.observability.langflow_telemetry import build_default_langflow_telemetry
 from app.stt.faster_whisper_recognizer import (
     FasterWhisperSpeechRecognizer,
     ModelNotFoundError,
@@ -35,7 +36,8 @@ def main() -> int:
 
     executor = CommandExecutor()
     llm_parser = build_default_llm_parser() if config.USE_LOCAL_LLM else None
-    window = MainWindow(recognizer, executor, llm_parser=llm_parser)
+    telemetry = build_default_langflow_telemetry()
+    window = MainWindow(recognizer, executor, llm_parser=llm_parser, telemetry=telemetry)
     window.show()
 
     return app.exec()

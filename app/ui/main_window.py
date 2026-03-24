@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from time import perf_counter
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -20,6 +21,11 @@ from app.audio.recorder import record_audio
 from app.commands.intents import parse_command
 from app.commands.llm_parser import LocalLLMCommandParser
 from app.executor.safe_executor import CommandExecutor
+from app.observability.langflow_telemetry import (
+    CommandTelemetryEvent,
+    LangflowTelemetry,
+    NoOpTelemetry,
+)
 from app.stt.faster_whisper_recognizer import FasterWhisperSpeechRecognizer
 
 
@@ -33,17 +39,24 @@ class ListenWorker(QObject):
         recognizer: FasterWhisperSpeechRecognizer,
         executor: CommandExecutor,
         llm_parser: LocalLLMCommandParser | None = None,
+        telemetry: LangflowTelemetry | NoOpTelemetry | None = None,
     ) -> None:
         super().__init__()
         self._recognizer = recognizer
         self._executor = executor
         self._llm_parser = llm_parser
+        self._telemetry = telemetry or NoOpTelemetry()
 
     @Slot()
     def run(self) -> None:
+        started = perf_counter()
         recognized_text = ""
         result_text = ""
         llm_raw_response: str | None = None
+        llm_error: str | None = None
+        parse_source = "none"
+        parsed_action: str | None = None
+        parsed_payload: str | None = None
 
         try:
             self.progress.emit("Записываю аудио...")
@@ -60,7 +73,8 @@ class ListenWorker(QObject):
                 result_text = "Не удалось распознать команду. Попробуйте еще раз."
             else:
                 parsed = parse_command(recognized_text)
-                llm_error = None
+                if parsed is not None:
+                    parse_source = "rule"
 
                 if (
                     parsed is None
@@ -68,6 +82,8 @@ class ListenWorker(QObject):
                     and not self._llm_parser.is_website_request(recognized_text)
                 ):
                     parsed = self._llm_parser.match_desktop_from_transcription(recognized_text)
+                    if parsed is not None:
+                        parse_source = "desktop_fuzzy"
 
                 if parsed is None and self._llm_parser is not None:
                     self.progress.emit("Интерпретирую команду через локальную LLM...")
@@ -75,6 +91,7 @@ class ListenWorker(QObject):
                     parsed = llm_result.command
                     llm_error = llm_result.error
                     llm_raw_response = llm_result.raw_response
+                    parse_source = llm_result.source
 
                 if parsed is None:
                     base_message = (
@@ -86,9 +103,28 @@ class ListenWorker(QObject):
                     else:
                         result_text = base_message
                 else:
+                    parsed_action = parsed.action
+                    parsed_payload = parsed.payload
                     result_text = self._executor.execute(parsed)
         except Exception as exc:
             result_text = f"Ошибка: {exc}"
+
+        duration_ms = int((perf_counter() - started) * 1000)
+        success = bool(parsed_action) and not result_text.startswith("Ошибка")
+        self._telemetry.log(
+            CommandTelemetryEvent(
+                timestamp_utc=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                duration_ms=duration_ms,
+                recognized_text=recognized_text,
+                parsed_action=parsed_action,
+                parsed_payload=parsed_payload,
+                parse_source=parse_source,
+                llm_error=llm_error,
+                llm_raw_response=llm_raw_response,
+                execution_result=result_text,
+                success=success,
+            )
+        )
 
         timestamp = datetime.now().strftime("%H:%M:%S")
         spoken = recognized_text if recognized_text else "<пусто>"
@@ -107,11 +143,13 @@ class MainWindow(QMainWindow):
         recognizer: FasterWhisperSpeechRecognizer,
         executor: CommandExecutor,
         llm_parser: LocalLLMCommandParser | None = None,
+        telemetry: LangflowTelemetry | NoOpTelemetry | None = None,
     ) -> None:
         super().__init__()
         self._recognizer = recognizer
         self._executor = executor
         self._llm_parser = llm_parser
+        self._telemetry = telemetry
         self._thread: QThread | None = None
         self._worker: ListenWorker | None = None
 
@@ -167,7 +205,12 @@ class MainWindow(QMainWindow):
         self._set_status(f"Слушаю ({config.RECORD_SECONDS} сек)...")
 
         self._thread = QThread(self)
-        self._worker = ListenWorker(self._recognizer, self._executor, self._llm_parser)
+        self._worker = ListenWorker(
+            self._recognizer,
+            self._executor,
+            self._llm_parser,
+            telemetry=self._telemetry,
+        )
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)

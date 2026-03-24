@@ -86,3 +86,19 @@ python main.py
 ## Примечание по безопасности
 
 Приложение не выполняет произвольные shell-команды и использует только фиксированный белый список действий.
+
+## Langflow: логи и статистика
+
+В приложение добавлена телеметрия команд с локальной статистикой и опциональной отправкой событий в Langflow.
+
+- Логи событий: `logs/langflow_events.jsonl`
+- Сводная статистика: `logs/langflow_stats.json`
+
+Настройки в `app/config.py`:
+
+- `LANGFLOW_ENABLED` — включает/выключает телеметрию
+- `LANGFLOW_ENDPOINT_URL` — URL webhook/API Langflow (если не задан, события пишутся только локально)
+- `LANGFLOW_API_KEY` — токен для `Authorization: Bearer`
+- `LANGFLOW_FLOW_ID` — идентификатор flow (опционально)
+- `LANGFLOW_TIMEOUT_S` — таймаут отправки
+- `LANGFLOW_EVENTS_FILE` и `LANGFLOW_STATS_FILE` — пути для локальных файлов
