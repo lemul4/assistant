@@ -5,8 +5,11 @@ import re
 from difflib import SequenceMatcher
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
+from typing import Any
 
-import requests
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_ollama import ChatOllama
 
 from app import config
 from app.commands.intents import ParsedCommand
@@ -61,6 +64,13 @@ class LocalLLMCommandParser:
         self._model = model
         self._timeout_s = timeout_s
         self._num_predict = num_predict
+        self._base_url = _to_ollama_base_url(url)
+        self._llm = _build_chat_ollama(
+            base_url=self._base_url,
+            model=self._model,
+            num_predict=self._num_predict,
+            timeout_s=self._timeout_s,
+        )
         self._desktop_items = self._collect_desktop_items()
         self._desktop_catalog_prompt = self._build_desktop_catalog_prompt(self._desktop_items)
         self._log_desktop_items(self._desktop_items)
@@ -69,25 +79,12 @@ class LocalLLMCommandParser:
         user_prompt = self._build_user_prompt(text)
 
         try:
-            response = requests.post(
-                self._url,
-                json={
-                    "model": self._model,
-                    "system": SYSTEM_PROMPT,
-                    "prompt": user_prompt,
-                    "format": "json",
-                    "think": False,
-                    "stream": False,
-                    "keep_alive": "15m",
-                    "options": {
-                        "num_predict": self._num_predict,
-                        "temperature": 0,
-                    },
-                },
-                timeout=self._timeout_s,
+            llm_response = self._llm.invoke(
+                [
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    HumanMessage(content=user_prompt),
+                ]
             )
-            response.raise_for_status()
-            payload = response.json()
         except Exception as exc:
             return LLMParseResult(
                 command=None,
@@ -96,7 +93,7 @@ class LocalLLMCommandParser:
                 raw_response=None,
             )
 
-        raw = str(payload.get("response", "")).strip()
+        raw = _extract_llm_text(llm_response)
 
         # Если Ollama вернул thinking отдельно, игнорируем его.
         # Для thinking-capable models reasoning может приходить в отдельном поле.
@@ -237,6 +234,92 @@ def build_default_llm_parser() -> LocalLLMCommandParser:
         timeout_s=config.OLLAMA_TIMEOUT_S,
         num_predict=config.OLLAMA_NUM_PREDICT,
     )
+
+
+def _build_chat_ollama(
+    *,
+    base_url: str,
+    model: str,
+    num_predict: int,
+    timeout_s: int,
+) -> ChatOllama:
+    base_kwargs: dict[str, Any] = {
+        "model": model,
+        "base_url": base_url,
+        "temperature": 0,
+    }
+
+    attempts: list[dict[str, Any]] = [
+        {
+            **base_kwargs,
+            "num_predict": num_predict,
+            "format": "json",
+            "keep_alive": "15m",
+            "client_kwargs": {"timeout": timeout_s},
+        },
+        {
+            **base_kwargs,
+            "num_predict": num_predict,
+            "format": "json",
+            "keep_alive": "15m",
+        },
+        {
+            **base_kwargs,
+            "num_predict": num_predict,
+            "format": "json",
+        },
+        {
+            **base_kwargs,
+            "num_predict": num_predict,
+        },
+        base_kwargs,
+    ]
+
+    last_error: TypeError | None = None
+    for kwargs in attempts:
+        try:
+            return ChatOllama(**kwargs)
+        except TypeError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+
+    return ChatOllama(**base_kwargs)
+
+
+def _to_ollama_base_url(url: str) -> str:
+    candidate = url.strip()
+    if not candidate:
+        return "http://localhost:11434"
+
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+
+    parsed = urlparse(candidate)
+    scheme = parsed.scheme or "http"
+    netloc = parsed.netloc or parsed.path
+    return f"{scheme}://{netloc}"
+
+
+def _extract_llm_text(response: object) -> str:
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                text_parts.append(item)
+                continue
+            if isinstance(item, dict):
+                value = item.get("text")
+                if value is not None:
+                    text_parts.append(str(value))
+        return "".join(text_parts).strip()
+
+    return str(content).strip()
 
 
 def _extract_json(raw: str) -> dict[str, object] | None:

@@ -52,6 +52,16 @@ TYPE_PREFIXES = (
     "введи текст ",
 )
 
+WEBSITE_PREFIXES = (
+    "открой сайт ",
+    "открыть сайт ",
+    "зайди на сайт ",
+    "перейди на сайт ",
+    "открой страницу ",
+    "зайди на ",
+    "перейди на ",
+)
+
 
 def parse_command(text: str) -> ParsedCommand | None:
     normalized = normalize_text(text)
@@ -81,6 +91,13 @@ def parse_command(text: str) -> ParsedCommand | None:
             to_type = normalized[len(prefix) :].strip()
             if to_type:
                 return ParsedCommand(action="type_text", payload=to_type, raw_text=text)
+            return None
+
+    for prefix in WEBSITE_PREFIXES:
+        if normalized.startswith(prefix):
+            website = normalized[len(prefix) :].strip(" .,!?:;\"'()[]{}")
+            if website:
+                return ParsedCommand(action="open_website", payload=website, raw_text=text)
             return None
 
     return None
