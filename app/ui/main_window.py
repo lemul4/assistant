@@ -62,7 +62,11 @@ class ListenWorker(QObject):
                 parsed = parse_command(recognized_text)
                 llm_error = None
 
-                if parsed is None and self._llm_parser is not None:
+                if (
+                    parsed is None
+                    and self._llm_parser is not None
+                    and not self._llm_parser.is_website_request(recognized_text)
+                ):
                     parsed = self._llm_parser.match_desktop_from_transcription(recognized_text)
 
                 if parsed is None and self._llm_parser is not None:

@@ -10,6 +10,20 @@ from urllib.parse import quote_plus
 from app.commands.intents import ParsedCommand
 
 
+KNOWN_WEBSITE_ALIASES = {
+    "яндекс": "https://ya.ru/",
+    "yandex": "https://ya.ru/",
+    "ya": "https://ya.ru/",
+    "ya.ru": "https://ya.ru/",
+    "гугл": "https://www.google.com/",
+    "google": "https://www.google.com/",
+    "ютуб": "https://www.youtube.com/",
+    "youtube": "https://www.youtube.com/",
+    "гитхаб": "https://github.com/",
+    "github": "https://github.com/",
+}
+
+
 class CommandExecutor:
     """Executes supported actions from parser and local LLM."""
 
@@ -74,12 +88,28 @@ class CommandExecutor:
         if not candidate:
             return "https://www.google.com"
 
+        normalized_candidate = re.sub(r"\s+", " ", candidate.lower()).strip()
+        for prefix in ("сайт ", "сайт", "website ", "site "):
+            if normalized_candidate.startswith(prefix):
+                normalized_candidate = normalized_candidate[len(prefix) :].strip()
+
+        if normalized_candidate in KNOWN_WEBSITE_ALIASES:
+            return KNOWN_WEBSITE_ALIASES[normalized_candidate]
+
         if candidate.startswith(("http://", "https://")):
             return candidate
 
+        if normalized_candidate.startswith(("http://", "https://")):
+            return normalized_candidate
+
+        if normalized_candidate.endswith(".ru") and " " not in normalized_candidate:
+            if normalized_candidate in {"yandex.ru", "www.yandex.ru"}:
+                return "https://ya.ru/"
+            return f"https://{normalized_candidate}"
+
         # If model gave a domain without scheme, add https.
-        if "." in candidate and " " not in candidate:
-            return f"https://{candidate}"
+        if "." in normalized_candidate and " " not in normalized_candidate:
+            return f"https://{normalized_candidate}"
 
         # As a last resort, interpret payload as search query.
         return f"https://www.google.com/search?q={quote_plus(candidate)}"

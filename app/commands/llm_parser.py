@@ -21,7 +21,7 @@ SYSTEM_PROMPT = (
     "open_google, open_youtube, search_google, type_text, open_app, open_website. "
     "Правила: "
     "1) Для запуска приложения action=open_app, payload=название приложения на английском (например steam, discord, telegram). "
-    "2) Для открытия сайта action=open_website, payload=полный URL, начинающийся с https:// (например https://store.steampowered.com). "
+    "2) Для открытия сайта action=open_website, payload может быть полным URL (https://...) или названием сайта/бренда (например яндекс, yandex, github). "
     "3) Для open_app сначала пытайся сопоставить запрос с элементом из списка Desktop (он передается в prompt ниже), даже при ошибках транскрипции. "
     'Если команда не подходит, верни {"action": null, "payload": null}. '
     "Никаких пояснений. Никакого текста вне JSON. /no_think"
@@ -125,11 +125,20 @@ class LocalLLMCommandParser:
 
         normalized_payload = None if parsed_payload is None else str(parsed_payload).strip() or None
 
+        # Safety net: if user clearly asked to open a website, do not allow open_app.
+        if _looks_like_website_request(text) and action == "open_app":
+            action = "open_website"
+            website_payload = _extract_website_candidate_from_text(text) or normalized_payload
+            normalized_payload = website_payload
+
         return LLMParseResult(
             command=ParsedCommand(action=action, payload=normalized_payload, raw_text=text),
             source="llm",
             raw_response=raw,
         )
+
+    def is_website_request(self, text: str) -> bool:
+        return _looks_like_website_request(text)
 
     def match_desktop_from_transcription(self, text: str) -> ParsedCommand | None:
         """Try to map transcription words to desktop entry stem and skip LLM if matched."""
@@ -261,7 +270,51 @@ _DESKTOP_MATCH_STOPWORDS = {
     "программа",
     "файл",
     "мне",
+    "сайт",
+    "страницу",
+    "страница",
+    "вебсайт",
+    "веб",
 }
+
+
+_WEBSITE_PREFIX_PATTERNS = (
+    re.compile(
+        r"^(?:пожалуйста\s+)?(?:открой|открыть|зайди|перейди|запусти)\s+"
+        r"(?:(?:на|в)\s+)?(?:сайт|страницу|страница|вебсайт|веб\s*сайт)\s+(.+)$"
+    ),
+    re.compile(r"^(?:пожалуйста\s+)?(?:зайди|перейди)\s+(?:на\s+)?(.+)$"),
+)
+
+
+def _looks_like_website_request(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+
+    if any(pattern.match(normalized) for pattern in _WEBSITE_PREFIX_PATTERNS):
+        return True
+
+    website_words = {"сайт", "вебсайт", "страницу", "страница"}
+    has_open_verb = any(word in normalized for word in ("открой", "открыть", "зайди", "перейди"))
+    has_website_word = any(word in normalized for word in website_words)
+    return has_open_verb and has_website_word
+
+
+def _extract_website_candidate_from_text(text: str) -> str | None:
+    normalized = normalize_text(text)
+    if not normalized:
+        return None
+
+    for pattern in _WEBSITE_PREFIX_PATTERNS:
+        match = pattern.match(normalized)
+        if not match:
+            continue
+        value = match.group(1).strip(" .,!?:;\"'()[]{}")
+        if value:
+            return value
+
+    return None
 
 
 def _extract_candidate_words(text: str) -> list[str]:
